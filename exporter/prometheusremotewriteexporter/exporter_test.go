@@ -359,7 +359,7 @@ func runExportPipeline(ts *prompb.TimeSeries, endpoint *url.URL) error {
 		return err
 	}
 
-	return prwe.handleExport(context.Background(), testmap)
+	return prwe.handleExport(context.Background(), testmap, "tenant1")
 }
 
 // Test_PushMetrics checks the number of TimeSeries received by server and the number of metrics dropped is the same as
@@ -901,7 +901,7 @@ func TestWALOnExporterRoundTrip(t *testing.T) {
 		"timeseries1": ts1,
 		"timeseries2": ts2,
 	}
-	errs := prwe.handleExport(ctx, tsMap)
+	errs := prwe.handleExport(ctx, tsMap, "tenant1")
 	assert.NoError(t, errs)
 	// Shutdown after we've written to the WAL. This ensures that our
 	// exported data in-flight will flushed flushed to the WAL before exiting.
@@ -922,30 +922,33 @@ func TestWALOnExporterRoundTrip(t *testing.T) {
 	lastIndex, ierr := wal.LastIndex()
 	assert.NoError(t, ierr)
 
-	var reqs []*prompb.WriteRequest
+	var reqs []*TenantWritePb
 	for i := firstIndex; i <= lastIndex; i++ {
 		protoBlob, err := wal.Read(i)
 		assert.NoError(t, err)
 		assert.NotNil(t, protoBlob)
-		req := new(prompb.WriteRequest)
-		err = proto.Unmarshal(protoBlob, req)
+		req := new(TenantWritePb)
+		err = req.Unmarshal(protoBlob)
 		assert.NoError(t, err)
 		reqs = append(reqs, req)
 	}
 	assert.Equal(t, 1, len(reqs))
 	// We MUST have 2 time series as were passed into tsMap.
 	gotFromWAL := reqs[0]
-	assert.Equal(t, 2, len(gotFromWAL.Timeseries))
-	want := &prompb.WriteRequest{
-		Timeseries: orderBySampleTimestamp([]prompb.TimeSeries{
-			*ts1, *ts2,
-		}),
+	assert.Equal(t, 2, len(gotFromWAL.WriteReq.Timeseries))
+	want := &TenantWritePb{
+		TenantId: "tenant1",
+		WriteReq: &prompb.WriteRequest{
+			Timeseries: orderBySampleTimestamp([]prompb.TimeSeries{
+				*ts1, *ts2,
+			}),
+		},
 	}
 
 	// Even after sorting timeseries, we need to sort them
 	// also by Label to ensure deterministic ordering.
 	orderByLabelValue(gotFromWAL)
-	gotFromWAL.Timeseries = orderBySampleTimestamp(gotFromWAL.Timeseries)
+	gotFromWAL.WriteReq.Timeseries = orderBySampleTimestamp(gotFromWAL.WriteReq.Timeseries)
 	orderByLabelValue(want)
 
 	assert.Equal(t, want, gotFromWAL)
@@ -971,7 +974,7 @@ func TestWALOnExporterRoundTrip(t *testing.T) {
 	gotFromUpload.Timeseries = orderBySampleTimestamp(gotFromUpload.Timeseries)
 	// Even after sorting timeseries, we need to sort them
 	// also by Label to ensure deterministic ordering.
-	orderByLabelValue(gotFromUpload)
+	orderByLabelValuePlain(gotFromUpload)
 
 	// 4.1. Ensure that all the various combinations match up.
 	// To ensure a deterministic ordering, sort the TimeSeries by Label Name.

@@ -11,13 +11,13 @@ import (
 )
 
 // batchTimeSeries splits series into multiple batch write requests.
-func batchTimeSeries(tsMap map[string]*prompb.TimeSeries, maxBatchByteSize int) ([]*prompb.WriteRequest, error) {
+func batchTimeSeries(tsMap map[string]*prompb.TimeSeries, maxBatchByteSize int, tenantId string) ([]*TenantWritePb, error) {
 	if len(tsMap) == 0 {
 		return nil, errors.New("invalid tsMap: cannot be empty map")
 	}
 
-	requests := make([]*prompb.WriteRequest, 0, len(tsMap))
-	tsArray := make([]prompb.TimeSeries, 0, len(tsMap))
+	var requests []*TenantWritePb
+	var tsArray []prompb.TimeSeries
 	sizeOfCurrentBatch := 0
 
 	i := 0
@@ -26,7 +26,10 @@ func batchTimeSeries(tsMap map[string]*prompb.TimeSeries, maxBatchByteSize int) 
 
 		if sizeOfCurrentBatch+sizeOfSeries >= maxBatchByteSize {
 			wrapped := convertTimeseriesToRequest(tsArray)
-			requests = append(requests, wrapped)
+			requests = append(requests, &TenantWritePb{
+				TenantId: tenantId,
+				WriteReq: wrapped,
+			})
 
 			tsArray = make([]prompb.TimeSeries, 0, len(tsMap)-i)
 			sizeOfCurrentBatch = 0
@@ -39,7 +42,10 @@ func batchTimeSeries(tsMap map[string]*prompb.TimeSeries, maxBatchByteSize int) 
 
 	if len(tsArray) != 0 {
 		wrapped := convertTimeseriesToRequest(tsArray)
-		requests = append(requests, wrapped)
+		requests = append(requests, &TenantWritePb{
+			TenantId: tenantId,
+			WriteReq: wrapped,
+		})
 	}
 
 	return requests, nil

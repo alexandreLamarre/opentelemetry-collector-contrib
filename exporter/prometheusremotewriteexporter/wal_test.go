@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func doNothingExportSink(_ context.Context, reqL []*prompb.WriteRequest) error {
+func doNothingExportSink(_ context.Context, reqL []*TenantWritePb) error {
 	_ = reqL
 	return nil
 }
@@ -34,13 +34,46 @@ func TestWALCreation_nonNilConfig(t *testing.T) {
 	assert.NoError(t, pwal.stop())
 }
 
-func orderByLabelValueForEach(reqL []*prompb.WriteRequest) {
+func orderByLabelValueForEach(reqL []*TenantWritePb) {
 	for _, req := range reqL {
 		orderByLabelValue(req)
 	}
 }
 
-func orderByLabelValue(wreq *prompb.WriteRequest) {
+func orderByLabelValue(wreq *TenantWritePb) {
+	// Sort the timeSeries by their labels.
+	type byLabelMessage struct {
+		label  *prompb.Label
+		sample *prompb.Sample
+	}
+
+	for _, timeSeries := range wreq.WriteReq.Timeseries {
+		bMsgs := make([]*byLabelMessage, 0, len(wreq.WriteReq.Timeseries)*10)
+		for i := range timeSeries.Labels {
+			bMsgs = append(bMsgs, &byLabelMessage{
+				label:  &timeSeries.Labels[i],
+				sample: &timeSeries.Samples[i],
+			})
+		}
+		sort.Slice(bMsgs, func(i, j int) bool {
+			return bMsgs[i].label.Value < bMsgs[j].label.Value
+		})
+
+		for i := range bMsgs {
+			timeSeries.Labels[i] = *bMsgs[i].label
+			timeSeries.Samples[i] = *bMsgs[i].sample
+		}
+	}
+
+	// Now finally sort stably by timeseries value for
+	// which just .String() is good enough for comparison.
+	sort.Slice(wreq.WriteReq.Timeseries, func(i, j int) bool {
+		ti, tj := wreq.WriteReq.Timeseries[i], wreq.WriteReq.Timeseries[j]
+		return ti.String() < tj.String()
+	})
+}
+
+func orderByLabelValuePlain(wreq *prompb.WriteRequest) {
 	// Sort the timeSeries by their labels.
 	type byLabelMessage struct {
 		label  *prompb.Label
@@ -103,24 +136,30 @@ func TestWAL_persist(t *testing.T) {
 	require.Nil(t, err)
 
 	// 1. Write out all the entries.
-	reqL := []*prompb.WriteRequest{
+	reqL := []*TenantWritePb{
 		{
-			Timeseries: []prompb.TimeSeries{
-				{
-					Labels:  []prompb.Label{{Name: "ts1l1", Value: "ts1k1"}},
-					Samples: []prompb.Sample{{Value: 1, Timestamp: 100}},
+			TenantId: "t1",
+			WriteReq: &prompb.WriteRequest{
+				Timeseries: []prompb.TimeSeries{
+					{
+						Labels:  []prompb.Label{{Name: "ts1l1", Value: "ts1k1"}},
+						Samples: []prompb.Sample{{Value: 1, Timestamp: 100}},
+					},
 				},
 			},
 		},
 		{
-			Timeseries: []prompb.TimeSeries{
-				{
-					Labels:  []prompb.Label{{Name: "ts2l1", Value: "ts2k1"}},
-					Samples: []prompb.Sample{{Value: 2, Timestamp: 200}},
-				},
-				{
-					Labels:  []prompb.Label{{Name: "ts1l1", Value: "ts1k1"}},
-					Samples: []prompb.Sample{{Value: 1, Timestamp: 100}},
+			TenantId: "t2",
+			WriteReq: &prompb.WriteRequest{
+				Timeseries: []prompb.TimeSeries{
+					{
+						Labels:  []prompb.Label{{Name: "ts2l1", Value: "ts2k1"}},
+						Samples: []prompb.Sample{{Value: 2, Timestamp: 200}},
+					},
+					{
+						Labels:  []prompb.Label{{Name: "ts1l1", Value: "ts1k1"}},
+						Samples: []prompb.Sample{{Value: 1, Timestamp: 100}},
+					},
 				},
 			},
 		},
@@ -144,7 +183,7 @@ func TestWAL_persist(t *testing.T) {
 	end, err := wal.LastIndex()
 	require.Nil(t, err)
 
-	var reqLFromWAL []*prompb.WriteRequest
+	var reqLFromWAL []*TenantWritePb
 	for i := start; i <= end; i++ {
 		req, err := pwal.readPrompbFromWAL(ctx, i)
 		require.Nil(t, err)

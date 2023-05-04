@@ -45,6 +45,12 @@ type Config struct {
 
 	// AddMetricSuffixes controls whether unit and type suffixes are added to metrics on export
 	AddMetricSuffixes bool `mapstructure:"add_metric_suffixes"`
+
+	Opni *OpniConfig `mapstructure:"opni,omitempty"`
+}
+
+type OpniConfig struct {
+	TenantResourceLabel string `mapstructure:"tenant_resource_label,omitempty"`
 }
 
 type CreatedMetric struct {

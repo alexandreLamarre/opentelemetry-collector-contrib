@@ -86,6 +86,9 @@ func TestLoadConfig(t *testing.T) {
 					Enabled: true,
 				},
 				CreatedMetric: &CreatedMetric{Enabled: true},
+				Opni: &OpniConfig{
+					TenantResourceLabel: "__tenant_id__",
+				},
 			},
 		},
 		{

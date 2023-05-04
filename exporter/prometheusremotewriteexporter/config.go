@@ -53,6 +53,12 @@ type Config struct {
 
 	// CreatedMetric allows customizing creation of _created metrics
 	CreatedMetric *CreatedMetric `mapstructure:"export_created_metric,omitempty"`
+
+	Opni *OpniConfig `mapstructure:"opni,omitempty"`
+}
+
+type OpniConfig struct {
+	TenantResourceLabel string `mapstructure:"tenant_resource_label,omitempty"`
 }
 
 type CreatedMetric struct {

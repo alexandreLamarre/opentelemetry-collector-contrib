@@ -55,6 +55,7 @@ type prwExporter struct {
 
 	wal              *prweWAL
 	exporterSettings prometheusremotewrite.Settings
+	tenantId         string
 }
 
 // newPRWExporter initializes a new prwExporter instance and sets fields accordingly.
@@ -70,6 +71,10 @@ func newPRWExporter(cfg *Config, set exporter.CreateSettings) (*prwExporter, err
 	}
 
 	userAgentHeader := fmt.Sprintf("%s/%s", strings.ReplaceAll(strings.ToLower(set.BuildInfo.Description), " ", "-"), set.BuildInfo.Version)
+	tenantId := "__tenant_id__"
+	if cfg.Opni != nil {
+		tenantId = cfg.Opni.TenantResourceLabel
+	}
 
 	prwe := &prwExporter{
 		endpointURL:     endpointURL,
@@ -85,6 +90,7 @@ func newPRWExporter(cfg *Config, set exporter.CreateSettings) (*prwExporter, err
 			DisableTargetInfo:   !cfg.TargetInfo.Enabled,
 			ExportCreatedMetric: cfg.CreatedMetric.Enabled,
 		},
+		tenantId: tenantId,
 	}
 	if cfg.WAL == nil {
 		return prwe, nil
@@ -142,7 +148,7 @@ func (prwe *prwExporter) PushMetrics(ctx context.Context, md pmetric.Metrics) er
 		for i := 0; i < md.ResourceMetrics().Len(); i++ {
 			var tenantId string
 			if md.ResourceMetrics().At(i).Resource().Attributes().Len() > 0 {
-				if val, ok := md.ResourceMetrics().At(i).Resource().Attributes().Get("__tenant_id__"); ok {
+				if val, ok := md.ResourceMetrics().At(i).Resource().Attributes().Get(prwe.tenantId); ok {
 					tenantId = val.AsString()
 				}
 			}

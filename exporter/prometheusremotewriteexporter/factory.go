@@ -117,5 +117,8 @@ func createDefaultConfig() component.Config {
 		CreatedMetric: &CreatedMetric{
 			Enabled: false,
 		},
+		Opni: &OpniConfig{
+			TenantResourceLabel: "__tenant_id__",
+		},
 	}
 }

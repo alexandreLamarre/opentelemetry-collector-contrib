@@ -137,12 +137,39 @@ func (prwe *prwExporter) PushMetrics(ctx context.Context, md pmetric.Metrics) er
 	case <-prwe.closeChan:
 		return errors.New("shutdown has been called")
 	default:
-		tsMap, err := prometheusremotewrite.FromMetrics(md, prwe.exporterSettings)
-		if err != nil {
-			err = consumererror.NewPermanent(err)
+		// Opni : split metrics by tenant here
+		tenantMetrics := map[string]pmetric.Metrics{}
+		for i := 0; i < md.ResourceMetrics().Len(); i++ {
+			var tenantId string
+			if md.ResourceMetrics().At(i).Resource().Attributes().Len() > 0 {
+				if val, ok := md.ResourceMetrics().At(i).Resource().Attributes().Get("__tenant_id__"); ok {
+					tenantId = val.AsString()
+				}
+			}
+			if _, ok := tenantMetrics[tenantId]; !ok {
+				tenantMetrics[tenantId] = pmetric.NewMetrics()
+			}
+			tenantMetrics[tenantId].ResourceMetrics().AppendEmpty()
+			md.ResourceMetrics().At(i).CopyTo(
+				tenantMetrics[tenantId].ResourceMetrics().At(tenantMetrics[tenantId].ResourceMetrics().Len() - 1),
+			)
 		}
-		// Call export even if a conversion error, since there may be points that were successfully converted.
-		return multierr.Combine(err, prwe.handleExport(ctx, tsMap))
+		errors := []error{}
+		for tenantId, metrics := range tenantMetrics {
+			tsMap, err := prometheusremotewrite.FromMetrics(metrics, prwe.exporterSettings)
+			if err != nil {
+				errors = append(errors, consumererror.NewPermanent(err))
+			}
+			// Call export even if a conversion error, since there may be points that were successfully converted.
+			errors = append(errors, multierr.Combine(err, prwe.handleExport(ctx, tsMap, tenantId)))
+		}
+		return multierr.Combine(errors...)
+		// tsMap, err := prometheusremotewrite.FromMetrics(md, prwe.exporterSettings)
+		// if err != nil {
+		// 	err = consumererror.NewPermanent(err)
+		// }
+		// // Call export even if a conversion error, since there may be points that were successfully converted.
+		// return multierr.Combine(err, prwe.handleExport(ctx, tsMap))
 	}
 }
 
@@ -158,14 +185,14 @@ func validateAndSanitizeExternalLabels(cfg *Config) (map[string]string, error) {
 	return sanitizedLabels, nil
 }
 
-func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries) error {
+func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries, tenantId string) error {
 	// There are no metrics to export, so return.
 	if len(tsMap) == 0 {
 		return nil
 	}
 
 	// Calls the helper function to convert and batch the TsMap to the desired format
-	requests, err := batchTimeSeries(tsMap, maxBatchByteSize)
+	requests, err := batchTimeSeries(tsMap, maxBatchByteSize, tenantId)
 	if err != nil {
 		return err
 	}
@@ -183,8 +210,8 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 }
 
 // export sends a Snappy-compressed WriteRequest containing TimeSeries to a remote write endpoint in order
-func (prwe *prwExporter) export(ctx context.Context, requests []*prompb.WriteRequest) error {
-	input := make(chan *prompb.WriteRequest, len(requests))
+func (prwe *prwExporter) export(ctx context.Context, requests []*TenantWritePb) error {
+	input := make(chan *TenantWritePb, len(requests))
 	for _, request := range requests {
 		input <- request
 	}
@@ -225,9 +252,9 @@ func (prwe *prwExporter) export(ctx context.Context, requests []*prompb.WriteReq
 	return errs
 }
 
-func (prwe *prwExporter) execute(ctx context.Context, writeReq *prompb.WriteRequest) error {
+func (prwe *prwExporter) execute(ctx context.Context, writeReq *TenantWritePb) error {
 	// Uses proto.Marshal to convert the WriteRequest into bytes array
-	data, err := proto.Marshal(writeReq)
+	data, err := proto.Marshal(writeReq.WriteReq)
 	if err != nil {
 		return consumererror.NewPermanent(err)
 	}
@@ -246,6 +273,7 @@ func (prwe *prwExporter) execute(ctx context.Context, writeReq *prompb.WriteRequ
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	req.Header.Set("X-Prometheus-Remote-Write-Version", "0.1.0")
 	req.Header.Set("User-Agent", prwe.userAgentHeader)
+	req.Header.Set("X-Scope-OrgID", writeReq.TenantId)
 
 	resp, err := prwe.client.Do(req)
 	if err != nil {

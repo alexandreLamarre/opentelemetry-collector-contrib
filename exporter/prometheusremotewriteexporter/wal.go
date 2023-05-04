@@ -24,8 +24,6 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/gogo/protobuf/proto"
-	"github.com/prometheus/prometheus/prompb"
 	"github.com/tidwall/wal"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
@@ -37,7 +35,7 @@ type prweWAL struct {
 	walConfig *WALConfig
 	walPath   string
 
-	exportSink func(ctx context.Context, reqL []*prompb.WriteRequest) error
+	exportSink func(ctx context.Context, reqL []*TenantWritePb) error
 
 	stopOnce  sync.Once
 	stopChan  chan struct{}
@@ -70,7 +68,7 @@ func (wc *WALConfig) truncateFrequency() time.Duration {
 	return defaultWALTruncateFrequency
 }
 
-func newWAL(walConfig *WALConfig, exportSink func(context.Context, []*prompb.WriteRequest) error) (*prweWAL, error) {
+func newWAL(walConfig *WALConfig, exportSink func(context.Context, []*TenantWritePb) error) (*prweWAL, error) {
 	if walConfig == nil {
 		// There are cases for which the WAL can be disabled.
 		// TODO: Perhaps log that the WAL wasn't enabled.
@@ -199,7 +197,7 @@ func (prwe *prweWAL) run(ctx context.Context) (err error) {
 // the requests to the Remote-Write endpoint, and then truncates the head of the WAL to where
 // it last read from.
 func (prwe *prweWAL) continuallyPopWALThenExport(ctx context.Context, signalStart func()) (err error) {
-	var reqL []*prompb.WriteRequest
+	var reqL []*TenantWritePb
 	defer func() {
 		// Keeping it within a closure to ensure that the later
 		// updated value of reqL is always flushed to disk.
@@ -231,7 +229,7 @@ func (prwe *prweWAL) continuallyPopWALThenExport(ctx context.Context, signalStar
 		default:
 		}
 
-		var req *prompb.WriteRequest
+		var req *TenantWritePb
 		req, err = prwe.readPrompbFromWAL(ctx, prwe.rWALIndex.Load())
 		if err != nil {
 			return err
@@ -291,7 +289,7 @@ func (prwe *prweWAL) syncAndTruncateFront() error {
 	return nil
 }
 
-func (prwe *prweWAL) exportThenFrontTruncateWAL(ctx context.Context, reqL []*prompb.WriteRequest) error {
+func (prwe *prweWAL) exportThenFrontTruncateWAL(ctx context.Context, reqL []*TenantWritePb) error {
 	if len(reqL) == 0 {
 		return nil
 	}
@@ -312,14 +310,14 @@ func (prwe *prweWAL) exportThenFrontTruncateWAL(ctx context.Context, reqL []*pro
 // persistToWAL is the routine that'll be hooked into the exporter's receiving side and it'll
 // write them to the Write-Ahead-Log so that shutdowns won't lose data, and that the routine that
 // reads from the WAL can then process the previously serialized requests.
-func (prwe *prweWAL) persistToWAL(requests []*prompb.WriteRequest) error {
+func (prwe *prweWAL) persistToWAL(requests []*TenantWritePb) error {
 	prwe.mu.Lock()
 	defer prwe.mu.Unlock()
 
 	// Write all the requests to the WAL in a batch.
 	batch := new(wal.Batch)
 	for _, req := range requests {
-		protoBlob, err := proto.Marshal(req)
+		protoBlob, err := req.Marshal()
 		if err != nil {
 			return err
 		}
@@ -330,7 +328,7 @@ func (prwe *prweWAL) persistToWAL(requests []*prompb.WriteRequest) error {
 	return prwe.wal.WriteBatch(batch)
 }
 
-func (prwe *prweWAL) readPrompbFromWAL(ctx context.Context, index uint64) (wreq *prompb.WriteRequest, err error) {
+func (prwe *prweWAL) readPrompbFromWAL(ctx context.Context, index uint64) (wreq *TenantWritePb, err error) {
 	prwe.mu.Lock()
 	defer prwe.mu.Unlock()
 
@@ -355,8 +353,8 @@ func (prwe *prweWAL) readPrompbFromWAL(ctx context.Context, index uint64) (wreq 
 
 		protoBlob, err = prwe.wal.Read(index)
 		if err == nil { // The read succeeded.
-			req := new(prompb.WriteRequest)
-			if err = proto.Unmarshal(protoBlob, req); err != nil {
+			req := new(TenantWritePb)
+			if err = req.Unmarshal(protoBlob); err != nil {
 				return nil, err
 			}
 

@@ -156,16 +156,9 @@ func (prwe *prwExporter) PushMetrics(ctx context.Context, md pmetric.Metrics) er
 			if err != nil {
 				errors = append(errors, consumererror.NewPermanent(err))
 			}
-			// Call export even if a conversion error, since there may be points that were successfully converted.
 			errors = append(errors, multierr.Combine(err, prwe.handleExport(ctx, tsMap, tenantId)))
 		}
 		return multierr.Combine(errors...)
-		// tsMap, err := prometheusremotewrite.FromMetrics(md, prwe.exporterSettings)
-		// if err != nil {
-		// 	err = consumererror.NewPermanent(err)
-		// }
-		// // Call export even if a conversion error, since there may be points that were successfully converted.
-		// return multierr.Combine(err, prwe.handleExport(ctx, tsMap))
 	}
 }
 
@@ -286,6 +279,25 @@ func (prwe *prwExporter) execute(ctx context.Context, writeReq *TenantWritePb) e
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	rerr := fmt.Errorf("remote write returned HTTP status %v; err = %w: %s", resp.Status, err, body)
+	// Opni : handle cortex non-errors
+	if resp.StatusCode == 400 {
+		// As a special case, status code 400 may indicate a success.
+		// Cortex handles a variety of cases where prometheus would normally
+		// return an error, such as duplicate or out of order samples. Cortex
+		// will return code 400 to prometheus, which prometheus will treat as
+		// a non-retriable error. In this case, the remote write status condition
+		// will be cleared as if the request succeeded.
+		message := err.Error()
+		if strings.Contains(message, "out of bounds") ||
+			strings.Contains(message, "out of order sample") ||
+			strings.Contains(message, "duplicate sample for timestamp") ||
+			strings.Contains(message, "exemplars not ingested because series not already present") {
+			{
+				// clear the soft error
+				rerr = nil
+			}
+		}
+	}
 	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
 		return rerr
 	}
